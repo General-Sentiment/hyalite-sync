@@ -1,0 +1,27 @@
+{
+  "name": "hyalite-sync",
+  "version": "0.1.0",
+  "description": "Sync content from a vault to a static site content directory",
+  "type": "module",
+  "bin": {
+    "hyalite-sync": "./bin/cli.mjs"
+  },
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test test/sync.test.mjs"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
