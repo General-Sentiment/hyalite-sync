@@ -1,4 +1,4 @@
-# obsidian-content-sync
+# hyalite-sync
 
 Sync content from an Obsidian vault to a static site content directory. Filters notes by frontmatter (e.g. `public: true`), converts `[[wiki-links]]` to markdown links, and copies referenced images.
 
@@ -22,14 +22,14 @@ obsidian-content-sync [options] [vault-path]
 
 ### Options
 
-| Flag | Description |
-|------|-------------|
-| `-c, --config <path>` | Path to config JSON file (default: `./obsidian-sync.json`) |
-| `--vault <path>` | Obsidian vault path (or set `OBSIDIAN_VAULT` env var) |
-| `--content-dir <path>` | Output directory for content files (default: `./content`) |
-| `--media-dir <path>` | Output directory for media files (default: `./public/media`) |
-| `-w, --watch` | Watch vault for changes and re-sync automatically |
-| `-h, --help` | Show help |
+| Flag                   | Description                                                  |
+| ---------------------- | ------------------------------------------------------------ |
+| `-c, --config <path>`  | Path to config JSON file (default: `./obsidian-sync.json`)   |
+| `--vault <path>`       | Obsidian vault path (or set `OBSIDIAN_VAULT` env var)        |
+| `--content-dir <path>` | Output directory for content files (default: `./content`)    |
+| `--media-dir <path>`   | Output directory for media files (default: `./public/media`) |
+| `-w, --watch`          | Watch vault for changes and re-sync automatically            |
+| `-h, --help`           | Show help                                                    |
 
 ### Config file
 
@@ -57,7 +57,9 @@ The vault path can also be set via the `OBSIDIAN_VAULT` environment variable or 
 
 3. **Syncs media** -- Copies locally-referenced images to the media output directory and rewrites paths to `/media/...`.
 
-4. **Writes output** -- Saves processed files to the content directory using the slug as the filename.
+4. **Generates slugs** -- Each file's slug is determined by (in order of priority): a `slug` field in frontmatter, the `title` field in frontmatter, or the filename (without extension). The value is then lowercased, non-word characters are stripped, spaces become hyphens, and consecutive hyphens are collapsed.
+
+5. **Writes output** -- Saves processed files to the content directory using the slug as the filename.
 
 ## Programmatic API
 
