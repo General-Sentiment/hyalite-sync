@@ -9,7 +9,7 @@ import {
   readdirSync,
   watch,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import matter from "gray-matter";
 
 export function slugify(name) {
@@ -98,14 +98,18 @@ export function normalizeWikiLinks(content, slugMap) {
     .join("");
 }
 
-const MEDIA_EXTENSIONS = new Set([
+const IMAGE_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif",
-  ".mp4", ".webm", ".ogv", ".mov",
-  ".mp3", ".ogg", ".wav", ".flac",
-  ".pdf",
 ]);
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".ogv", ".mov"]);
+
+const MEDIA_EXTENSIONS = new Set([
+  ...IMAGE_EXTENSIONS,
+  ...VIDEO_EXTENSIONS,
+  ".mp3", ".ogg", ".wav", ".flac",
+  ".pdf",
+]);
 
 function fileExt(name) {
   const i = name.lastIndexOf(".");
@@ -116,8 +120,35 @@ function isMediaFile(name) {
   return MEDIA_EXTENSIONS.has(fileExt(name));
 }
 
+function isImageFile(name) {
+  return IMAGE_EXTENSIONS.has(fileExt(name));
+}
+
 function isVideoFile(name) {
   return VIDEO_EXTENSIONS.has(fileExt(name));
+}
+
+/**
+ * Decide where a referenced media file should live in the output and what
+ * URL the markdown should use. Images are routed to imageDir and use a
+ * file-relative path so downstream tooling (e.g. Astro's image service) can
+ * pick them up; everything else stays under mediaDir with an absolute web URL.
+ */
+function placeMedia(target, srcPath, mdFilePath, config) {
+  const { contentDir, mediaDir, imageDir, mediaUrl = "/media" } = config;
+  const rel = mediaRelativePath(srcPath, config.vaultPath);
+  if (imageDir && isImageFile(target)) {
+    const destPath = join(imageDir, rel);
+    mkdirSync(dirname(destPath), { recursive: true });
+    copyFileSync(srcPath, destPath);
+    let url = relative(dirname(mdFilePath), destPath);
+    if (!url.startsWith(".")) url = "./" + url;
+    return { destPath, url };
+  }
+  const destPath = join(mediaDir, rel);
+  mkdirSync(dirname(destPath), { recursive: true });
+  copyFileSync(srcPath, destPath);
+  return { destPath, url: `${mediaUrl}/${rel}` };
 }
 
 /**
@@ -193,11 +224,17 @@ function findMediaInVault(target, filePath, vaultPath) {
 
 /**
  * Resolve wiki-links in frontmatter values.
- * Media wiki-links are copied and rewritten to /media/ paths.
+ * Media wiki-links are copied and rewritten to the appropriate URL.
  * Non-media wiki-links are resolved via the slug map.
  */
-export function resolveFrontmatterWikiLinks(data, slugMap, filePath, vaultPath, mediaDir) {
+export function resolveFrontmatterWikiLinks(data, slugMap, filePath, config) {
+  const { vaultPath, contentDir } = config;
   const wikiLinkRegex = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+  // Frontmatter values aren't relative to a specific markdown file, so we
+  // resolve image URLs relative to contentDir (i.e. the .md sits at
+  // contentDir/<slug>.md). placeMedia will compute paths from there.
+  const syntheticMdPath = join(contentDir, "_frontmatter_.md");
 
   function resolveValue(value) {
     if (typeof value === "string") {
@@ -205,11 +242,7 @@ export function resolveFrontmatterWikiLinks(data, slugMap, filePath, vaultPath, 
         if (isMediaFile(target)) {
           const srcPath = findMediaInVault(target, filePath, vaultPath);
           if (srcPath) {
-            const relativePath = mediaRelativePath(srcPath, vaultPath);
-            const destPath = join(mediaDir, relativePath);
-            mkdirSync(dirname(destPath), { recursive: true });
-            copyFileSync(srcPath, destPath);
-            return `/media/${relativePath}`;
+            return placeMedia(target, srcPath, syntheticMdPath, config).url;
           }
         }
         // Non-media: resolve as page link
@@ -243,7 +276,8 @@ export function resolveFrontmatterWikiLinks(data, slugMap, filePath, vaultPath, 
  * matched files are copied into mediaDir and the line is rewritten to a
  * /media/... path so downstream rendering doesn't need wiki-link awareness.
  */
-export function syncSliderMedia(content, filePath, vaultPath, mediaDir) {
+export function syncSliderMedia(content, filePath, outFilePath, config) {
+  const { vaultPath } = config;
   const fence = /^```slider[^\n]*\n([\s\S]*?)\n```\s*$/gm;
   // Accept bare [[file]] or Obsidian embed prefixes like ![[file]] / !S[[file]].
   const wikiLink = /(?:!\w*)?\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
@@ -251,11 +285,7 @@ export function syncSliderMedia(content, filePath, vaultPath, mediaDir) {
     const rewritten = body.replace(wikiLink, (whole, target) => {
       const srcPath = findMediaInVault(target, filePath, vaultPath);
       if (!srcPath) return whole;
-      const relativePath = mediaRelativePath(srcPath, vaultPath);
-      const destPath = join(mediaDir, relativePath);
-      mkdirSync(dirname(destPath), { recursive: true });
-      copyFileSync(srcPath, destPath);
-      return `/media/${relativePath}`;
+      return placeMedia(target, srcPath, outFilePath, config).url;
     });
     return "```slider\n" + rewritten + "\n```";
   });
@@ -268,7 +298,8 @@ export function syncSliderMedia(content, filePath, vaultPath, mediaDir) {
  * Fenced code blocks are skipped so slider blocks (already rewritten) and
  * literal samples are left alone.
  */
-export function syncEmbedMedia(content, filePath, vaultPath, mediaDir) {
+export function syncEmbedMedia(content, filePath, outFilePath, config) {
+  const { vaultPath } = config;
   const embedRe = /!\w*\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
   const parts = content.split(/(^```[^\n]*\n[\s\S]*?\n```\s*$)/gm);
   return parts
@@ -278,16 +309,12 @@ export function syncEmbedMedia(content, filePath, vaultPath, mediaDir) {
         if (!isMediaFile(target)) return whole;
         const srcPath = findMediaInVault(target, filePath, vaultPath);
         if (!srcPath) return whole;
-        const relativePath = mediaRelativePath(srcPath, vaultPath);
-        const destPath = join(mediaDir, relativePath);
-        mkdirSync(dirname(destPath), { recursive: true });
-        copyFileSync(srcPath, destPath);
-        const mediaUrl = `/media/${relativePath}`;
+        const { url } = placeMedia(target, srcPath, outFilePath, config);
         if (isVideoFile(target)) {
-          return `<figure class="video"><video src="${mediaUrl}" autoplay muted loop playsinline></video></figure>`;
+          return `<figure class="video"><video src="${url}" autoplay muted loop playsinline></video></figure>`;
         }
         const alt = display && !/^\d+$/.test(display.trim()) ? display.trim() : "";
-        return `![${alt}](${mediaUrl})`;
+        return `![${alt}](${url})`;
       });
     })
     .join("");
@@ -296,14 +323,15 @@ export function syncEmbedMedia(content, filePath, vaultPath, mediaDir) {
 /**
  * Copy referenced images from vault to media directory, rewriting paths.
  */
-export function syncMedia(content, filePath, vaultPath, mediaDir) {
+export function syncMedia(content, filePath, outFilePath, config) {
+  const { vaultPath } = config;
   const imageRegex = /!\[[^\]]*\]\(([^)]+)\)/g;
   let result = content;
 
   for (const [, imgPath] of content.matchAll(imageRegex)) {
     if (imgPath.startsWith("http://") || imgPath.startsWith("https://")) continue;
-    // Skip absolute web paths — they're already pointing at synced media.
-    if (imgPath.startsWith("/")) continue;
+    // Skip web-absolute and already-relative paths — already rewritten.
+    if (imgPath.startsWith("/") || imgPath.startsWith("./") || imgPath.startsWith("../")) continue;
 
     let srcPath = resolve(dirname(filePath), imgPath);
     if (!existsSync(srcPath)) {
@@ -311,11 +339,8 @@ export function syncMedia(content, filePath, vaultPath, mediaDir) {
     }
     if (!existsSync(srcPath) || !statSync(srcPath).isFile()) continue;
 
-    const relativePath = mediaRelativePath(srcPath, vaultPath);
-    const destPath = join(mediaDir, relativePath);
-    mkdirSync(dirname(destPath), { recursive: true });
-    copyFileSync(srcPath, destPath);
-    result = result.replaceAll(imgPath, `/media/${relativePath}`);
+    const { url } = placeMedia(imgPath, srcPath, outFilePath, config);
+    result = result.replaceAll(imgPath, url);
   }
 
   return result;
@@ -374,16 +399,17 @@ export function syncFile(filePath, vaultPath, slugMap, config) {
     cleanData[field] = resolveComputedField(source, fileStat, { slug, filePath });
   }
 
-  // Resolve wiki-links in frontmatter values
-  const resolvedData = resolveFrontmatterWikiLinks(cleanData, slugMap, filePath, vaultPath, mediaDir);
+  const outPath = join(contentDir, `${slug}${ext}`);
 
-  let normalizedContent = syncSliderMedia(content, filePath, vaultPath, mediaDir);
-  normalizedContent = syncEmbedMedia(normalizedContent, filePath, vaultPath, mediaDir);
+  // Resolve wiki-links in frontmatter values
+  const resolvedData = resolveFrontmatterWikiLinks(cleanData, slugMap, filePath, config);
+
+  let normalizedContent = syncSliderMedia(content, filePath, outPath, config);
+  normalizedContent = syncEmbedMedia(normalizedContent, filePath, outPath, config);
   normalizedContent = normalizeWikiLinks(normalizedContent, slugMap);
-  normalizedContent = syncMedia(normalizedContent, filePath, vaultPath, mediaDir);
+  normalizedContent = syncMedia(normalizedContent, filePath, outPath, config);
   const output = matter.stringify(normalizedContent, resolvedData);
 
-  const outPath = join(contentDir, `${slug}${ext}`);
   writeFileSync(outPath, output);
 
   return slug;
@@ -483,6 +509,8 @@ export function loadConfig(configPath, overrides = {}) {
     vaultPath: resolve(vaultPath),
     contentDir: resolve(cwd, merged.contentDir || "./content"),
     mediaDir: resolve(cwd, merged.mediaDir || "./public/media"),
+    imageDir: merged.imageDir ? resolve(cwd, merged.imageDir) : null,
+    mediaUrl: merged.mediaUrl || "/media",
     filter: merged.filter || {},
     stripFields: merged.stripFields || [],
     computedFields: merged.computedFields || {},
